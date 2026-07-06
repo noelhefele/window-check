@@ -8,26 +8,43 @@ notification only when there's something to do.
 
 Every 30 minutes it reads:
 
-- **Indoor CO₂** from an [Aranet4](https://aranet.com/products/aranet4/) sensor over Bluetooth
+- **Indoor CO₂, temperature & humidity** from an [Aranet4](https://aranet.com/products/aranet4/) sensor over Bluetooth
 - **Outdoor air quality** (AQI, PM2.5, O₃) from [WAQI](https://aqicn.org) — US AQI scale
-- **Temperature & humidity** (for dew point) from [Open-Meteo](https://open-meteo.com)
+- **Weather, wind & pollen** from [Open-Meteo](https://open-meteo.com) (temp/humidity → dew point, wind for cross-ventilation, precipitation, grass/birch/ragweed pollen)
 
 …then notifies you when:
 
-- CO₂ is high **and** outside is clean & comfortable → **open the windows**
-- CO₂ is high but outside is poor → **run the purifier, keep them closed**
-- Outdoor PM2.5 spikes → **close the windows**
+- CO₂ is high **and** outside is clean & comfortable → **open up**
+- CO₂ is high but outside is poor (ozone, pollen, rain…) → **keep shut, run the Levoit**
+- Outdoor PM2.5 spikes → **close up, purifiers HIGH**
 - Hot inside, cooler & clean & comfortable outside → **free cooling: open up,
   cut the AC** (and it tells you when to close back up)
 - Bone-dry inside, damper outside → **short flush to add some moisture**
 
-All the "open" triggers gate comfort on the **outdoor dew point** (≤ your
-threshold) — that's what decides whether incoming air actually feels good.
+Open/flush verdicts carry **cross-ventilation guidance** from the live wind
+(which window is intake, which is exhaust; both if it's calm), and each verdict
+manages the **Levoit** purifiers (off while windows are open, back on when they
+close, HIGH for smoke, MEDIUM for pollen, a LOW-timer nudge in the moderate PM2.5
+band).
 
-It uses hysteresis so it won't nag: one CO₂ alert until levels recover (drop
-below the all-clear), the free-cooling advice latches until it's done, PM2.5
-alerts at most once every 2 hours, dry-flush at most once every 6, and "all
-good" is silent (stdout only).
+The **clean gate** blocks "open" advice on high AQI, ozone, PM2.5, **high pollen**
+(grass/birch/ragweed over config thresholds), or **rain** — logging why, without
+a banner. All "open" triggers also gate comfort on the **outdoor dew point** —
+that's what decides whether incoming air actually feels good.
+
+It uses hysteresis so it won't nag: one CO₂ alert until levels recover, the
+free-cooling advice latches until it's done, PM2.5 alerts at most once every 2h,
+dry-flush every 6h, the Levoit nudge every 4h, and "all good" is silent.
+
+Each run logs a one-line instrument readout followed by the verdict:
+
+```
+⌂ 83° 64% 526ppm │ ◌ 71° dew67° AQI55 │ E← 4mph
+⇒ PM2.5 AQI 55, windows shut — worth running the Levoit: LOW, 2h timer is plenty.
+```
+
+> **Note:** Open-Meteo's pollen data currently covers Europe only; elsewhere the
+> pollen fields return `null` and the pollen gate stays inert (never blocks).
 
 ## Requirements
 

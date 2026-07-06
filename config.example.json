@@ -18,8 +18,13 @@
     "free_cooling_done_below_f": 72,
     "flush_indoor_rh_max": 30,
     "flush_dew_delta_f": 3,
-    "flush_outdoor_temp_min_f": 35
+    "flush_outdoor_temp_min_f": 35,
+    "pollen_grass": 20,
+    "pollen_birch": 90,
+    "pollen_ragweed": 20,
+    "wind_calm_mph": 4
   },
   "pm25_alert_cooldown_hours": 2,
-  "flush_alert_cooldown_hours": 6
+  "flush_alert_cooldown_hours": 6,
+  "levoit_nudge_cooldown_hours": 4
 }
