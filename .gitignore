@@ -1,0 +1,15 @@
+# Real config holds secrets (WAQI token) and personal location — never commit it
+config.json
+
+# Runtime state and logs
+state.json
+log.txt
+*.log
+
+# Python / venv / macOS cruft
+__pycache__/
+*.pyc
+venv/
+.venv/
+WindowCheck.app/
+.DS_Store

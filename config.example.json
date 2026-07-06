@@ -1,0 +1,17 @@
+{
+  "aranet_address": "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX",
+  "waqi_token": "YOUR_WAQI_TOKEN_HERE",
+  "latitude": 40.0,
+  "longitude": -73.0,
+  "timezone": "America/New_York",
+  "window_orientations": ["north", "west"],
+  "thresholds": {
+    "co2_alert": 1000,
+    "co2_all_clear": 700,
+    "dew_point_f": 65,
+    "aqi_clean": 75,
+    "o3": 100,
+    "pm25": 100
+  },
+  "pm25_alert_cooldown_hours": 2
+}
