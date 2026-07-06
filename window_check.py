@@ -31,9 +31,13 @@ REQUIRED = {
     "window_orientations": list,
     "thresholds": dict,
     "pm25_alert_cooldown_hours": (int, float),
+    "flush_alert_cooldown_hours": (int, float),
 }
 REQUIRED_THRESHOLDS = {
     "co2_alert", "co2_all_clear", "dew_point_f", "aqi_clean", "o3", "pm25",
+    "free_cooling_indoor_min_f", "free_cooling_delta_f",
+    "free_cooling_close_within_f", "free_cooling_done_below_f",
+    "flush_indoor_rh_max", "flush_dew_delta_f", "flush_outdoor_temp_min_f",
 }
 
 
@@ -93,7 +97,8 @@ def load_config():
 
 
 def load_state():
-    default = {"co2_alert_active": False, "last_pm25_alert_ts": 0.0}
+    default = {"co2_alert_active": False, "last_pm25_alert_ts": 0.0,
+               "cooling_open": False, "last_flush_alert_ts": 0.0}
     try:
         with open(STATE_PATH) as f:
             s = json.load(f)
@@ -136,6 +141,8 @@ def main():
     try:
         reading = aranet4.client.get_current_readings(cfg["aranet_address"])
         co2 = reading.co2
+        tin_c = reading.temperature   # °C
+        rh_in = reading.humidity      # %
         if co2 is None:
             raise ValueError("Aranet returned no CO2 value")
     except Exception as e:
@@ -191,29 +198,45 @@ def main():
 
     tout = round(wx["temperature_2m"])
     rh = wx["relative_humidity_2m"]
-    dp = round(dew_point_f(tout, rh))
+    dp = round(dew_point_f(tout, rh))          # outdoor dew point (F)
+
+    # Indoor temp/humidity from the Aranet (-1 is the library's "absent" value).
+    tin_f = round(tin_c * 9 / 5 + 32) if tin_c not in (None, -1) else None
+    rh_in = rh_in if rh_in not in (None, -1) else None
+    dp_in = (round(dew_point_f(tin_f, rh_in))
+             if tin_f is not None and rh_in is not None else None)
 
     aqi_s = aqi if aqi is not None else "n/a"
     pm25_s = pm25 if pm25 is not None else "n/a"
     o3_s = round(o3) if o3 is not None else "n/a"
     outside = (f"AQI {aqi_s}, PM2.5 {pm25_s} (AQI), O3 {o3_s} (AQI), "
                f"{tout}F, dew point {dp}F")
-    print(f"[{stamp}] Indoor CO2: {co2} ppm  |  Outside: {outside}  "
-          f"[WAQI: {station}]")
+    indoor = f"CO2 {co2} ppm"
+    if tin_f is not None:
+        indoor += f", {tin_f}F"
+    if rh_in is not None:
+        indoor += f", RH {round(rh_in)}%"
+    if dp_in is not None:
+        indoor += f", dew point {dp_in}F"
+    print(f"[{stamp}] Indoor: {indoor}  |  Outside: {outside}  [WAQI: {station}]")
 
-    # Require a valid overall AQI before ever recommending "open"; missing
-    # per-pollutant sub-indices don't block (overall AQI already caps them).
-    open_ok = (aqi is not None and aqi <= thr["aqi_clean"]
-               and (o3 is None or o3 < thr["o3"])
-               and (pm25 is None or pm25 < thr["pm25"])
-               and dp <= thr["dew_point_f"])
+    # "AQI clean" gate shared by every open/flush trigger. Require a valid
+    # overall AQI; missing per-pollutant sub-indices don't block (overall AQI
+    # already caps them).
+    aq_clean = (aqi is not None and aqi <= thr["aqi_clean"]
+                and (o3 is None or o3 < thr["o3"])
+                and (pm25 is None or pm25 < thr["pm25"]))
+    # CO2-driven "open" also needs comfortable incoming air (outdoor dew point).
+    open_ok = aq_clean and dp <= thr["dew_point_f"]
 
     state = load_state()
     changed = False
+    spoke = False   # did any trigger emit a "=>" line this run?
 
     # --- PM2.5 close-up alert (independent of CO2, rate-limited) ---
     cooldown = cfg["pm25_alert_cooldown_hours"] * 3600
     if pm25 is not None and pm25 >= thr["pm25"]:
+        spoke = True
         if now - state["last_pm25_alert_ts"] >= cooldown:
             msg = (f"CLOSE your {orient} windows — outdoor PM2.5 is unhealthy "
                    f"(PM2.5 AQI {pm25}, overall AQI {aqi_s}).")
@@ -224,8 +247,64 @@ def main():
         else:
             print(f"=> PM2.5 high (AQI {pm25}) but alerted recently — suppressed.")
 
+    # --- Free-cooling: hot inside, cooler & clean outside → open up and cut
+    #     the AC (independent of CO2; latched so it won't repeat). ---
+    if tin_f is not None:
+        cool_ok = (tin_f >= thr["free_cooling_indoor_min_f"]
+                   and tout <= tin_f - thr["free_cooling_delta_f"]
+                   and aq_clean
+                   and dp <= thr["dew_point_f"])
+        if not state["cooling_open"]:
+            if cool_ok:
+                spoke = True
+                msg = (f"Free cooling — open up, kill the AC. Open your "
+                       f"{orient} windows (inside {tin_f}F, out {tout}F).")
+                print("=>", msg)
+                notify(msg)
+                state["cooling_open"] = True
+                changed = True
+        else:  # currently latched open
+            if tin_f < thr["free_cooling_done_below_f"]:
+                spoke = True  # job done — cleared silently (no notification)
+                print(f"=> Free cooling done — inside now {tin_f}F; latch cleared.")
+                state["cooling_open"] = False
+                changed = True
+            elif tout >= tin_f - thr["free_cooling_close_within_f"]:
+                spoke = True
+                msg = f"Close up, back to AC. (Outside {tout}F, inside {tin_f}F.)"
+                print("=>", msg)
+                notify(msg)
+                state["cooling_open"] = False
+                changed = True
+            else:
+                spoke = True
+                print(f"=> Free cooling holding (inside {tin_f}F, out {tout}F).")
+
+    # --- Dry-air flush: bone dry inside, damper outside → a short flush adds
+    #     moisture (independent of CO2; throttled). ---
+    flush_cooldown = cfg["flush_alert_cooldown_hours"] * 3600
+    if rh_in is not None and dp_in is not None:
+        flush_ok = (rh_in <= thr["flush_indoor_rh_max"]
+                    and dp >= dp_in + thr["flush_dew_delta_f"]
+                    and tout >= thr["flush_outdoor_temp_min_f"]
+                    and aq_clean)
+        if flush_ok:
+            spoke = True
+            if now - state["last_flush_alert_ts"] >= flush_cooldown:
+                msg = (f"Bone dry inside (RH {round(rh_in)}%) and it's damper "
+                       f"out — 10-15 min flush adds moisture, then close before "
+                       f"the heat bleeds.")
+                print("=>", msg)
+                notify(msg)
+                state["last_flush_alert_ts"] = now
+                changed = True
+            else:
+                print(f"=> Dry-flush conditions met (RH {round(rh_in)}%) but "
+                      f"alerted recently — suppressed.")
+
     # --- CO2 alert with hysteresis latch ---
     if co2 >= thr["co2_alert"]:
+        spoke = True
         if open_ok:
             msg = (f"OPEN your {orient} windows — CO2 {co2} ppm, and outside "
                    f"is clean & comfortable ({outside}).")
@@ -239,12 +318,12 @@ def main():
             changed = True
         else:
             print(f"=> [CO2 still {co2}, already alerted — suppressed] {msg}")
-    else:
-        if co2 < thr["co2_all_clear"] and state["co2_alert_active"]:
-            state["co2_alert_active"] = False  # reset latch below all-clear
-            changed = True
-        if pm25 is None or pm25 < thr["pm25"]:
-            print(f"=> All good — CO2 {co2} ppm is fresh. No need to open.")
+    elif co2 < thr["co2_all_clear"] and state["co2_alert_active"]:
+        state["co2_alert_active"] = False  # reset latch below all-clear
+        changed = True
+
+    if not spoke:
+        print(f"=> All good — CO2 {co2} ppm, nothing to do.")
 
     if changed:
         save_state(state)

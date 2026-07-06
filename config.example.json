@@ -11,7 +11,15 @@
     "dew_point_f": 65,
     "aqi_clean": 75,
     "o3": 100,
-    "pm25": 100
+    "pm25": 100,
+    "free_cooling_indoor_min_f": 74,
+    "free_cooling_delta_f": 3,
+    "free_cooling_close_within_f": 1,
+    "free_cooling_done_below_f": 72,
+    "flush_indoor_rh_max": 30,
+    "flush_dew_delta_f": 3,
+    "flush_outdoor_temp_min_f": 35
   },
-  "pm25_alert_cooldown_hours": 2
+  "pm25_alert_cooldown_hours": 2,
+  "flush_alert_cooldown_hours": 6
 }
