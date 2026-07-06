@@ -43,7 +43,8 @@ dry-flush every 6h, the Levoit nudge every 4h, and "all good" is silent.
 
 Each run logs a one-line instrument readout followed by the verdict; banners are
 posted as **WindowCheck** (configurable in System Settings ▸ Notifications) with a
-one-glyph state title:
+one-glyph state title and a short system sound (`notify_sound`, default *Glass* —
+the urgent tier and smoke use `notify_sound_urgent`, default *Sosumi*):
 
 ```
 ⌂ 83° 64% 526ppm │ ◌ 71° dew67° AQI55 │ E← 4mph

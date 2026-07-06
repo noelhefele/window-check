@@ -26,6 +26,8 @@ REQUIRED = {
     "aranet_address": str,
     "waqi_token": str,
     "google_pollen_key": str,
+    "notify_sound": str,
+    "notify_sound_urgent": str,
     "latitude": (int, float),
     "longitude": (int, float),
     "timezone": str,
@@ -62,13 +64,17 @@ _COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 _ARROWS = {"N": "↓", "NE": "↙", "E": "←", "SE": "↖",
            "S": "↑", "SW": "↗", "W": "→", "NW": "↘"}
 
-_GLYPHS = {}  # populated from config; maps banner title → state glyph
+_GLYPHS = {}              # populated from config; maps banner title → glyph
+_SOUND = "Glass"          # default notification sound (from config)
+_SOUND_URGENT = "Sosumi"  # urgent-tier sound: CO2 ≥ 2000 / smoke (from config)
 
 
-def notify(message, title="Window check"):
+def notify(message, title="Window check", urgent=False):
     """Post a notification named 'WindowCheck' via the app bundle, with an
-    osascript fallback. Prefixes the title with its config state glyph."""
+    osascript fallback. Prefixes the title with its config state glyph and
+    plays the default sound (or the urgent sound for CO2-urgent / smoke)."""
     disp = f"{_GLYPHS.get(title, '')} {title}".strip()
+    sound = _SOUND_URGENT if urgent else _SOUND
     try:
         from Foundation import (NSUserNotification, NSUserNotificationCenter,
                                 NSRunLoop, NSDate)
@@ -77,6 +83,7 @@ def notify(message, title="Window check"):
             n = NSUserNotification.alloc().init()
             n.setTitle_(disp)
             n.setInformativeText_(message)
+            n.setSoundName_(sound)
             center.deliverNotification_(n)
             # brief run-loop tick so the center actually delivers before exit
             NSRunLoop.currentRunLoop().runUntilDate_(
@@ -87,8 +94,8 @@ def notify(message, title="Window check"):
     safe, st = message.replace('"', "'"), disp.replace('"', "'")
     try:
         subprocess.run(["osascript", "-e",
-                        f'display notification "{safe}" with title "{st}"'],
-                       check=False)
+                        f'display notification "{safe}" with title "{st}" '
+                        f'sound name "{sound}"'], check=False)
     except Exception as e:
         print(f"[notify failed] {e}", file=sys.stderr)
 
@@ -231,8 +238,11 @@ def main():
     lat, lon = cfg["latitude"], cfg["longitude"]
     tz = cfg["timezone"]
     orientations = cfg["window_orientations"]
+    global _SOUND, _SOUND_URGENT
     _GLYPHS.clear()
     _GLYPHS.update(cfg["banner_glyphs"])
+    _SOUND = cfg["notify_sound"]
+    _SOUND_URGENT = cfg["notify_sound_urgent"]
     now = time.time()
 
     # --- indoor CO2 + temp/RH (BLE) ---
@@ -354,7 +364,7 @@ def main():
             body = ("Close up, smoke outside. Levoit back on: both units HIGH, "
                     "no timer — runs until the close-up clears.")
             verdict(body)
-            notify(body, title="Smoke")
+            notify(body, title="Smoke", urgent=True)
             state["last_pm25_alert_ts"] = now
             changed = True
         else:
@@ -410,7 +420,7 @@ def main():
             body = (f"CO₂ {co2} — you're thinking through soup. Open something "
                     f"NOW, any window, air quality secondary.")
             verdict(body)
-            notify(body, title="CO₂ urgent")
+            notify(body, title="CO₂ urgent", urgent=True)
             state["last_co2_urgent_ts"] = now
             changed = True
         else:
