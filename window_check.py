@@ -2,9 +2,10 @@
 """window_check — should I open the windows?
 
 Reads indoor CO2 + temperature/humidity from an Aranet4 (BLE), outdoor air
-quality from WAQI (aqicn.org, US AQI scale), and weather/wind/pollen from
-Open-Meteo, then decides whether to open, close, flush, or free-cool — and
-manages the Levoit purifiers accordingly. Runs unattended via launchd.
+quality from WAQI (aqicn.org, US AQI scale), weather/wind from Open-Meteo, and
+pollen from Google's Pollen API (0-5 index), then decides whether to open,
+close, flush, or free-cool — and manages the Levoit purifiers accordingly.
+Also a quiet interoception backstop for indoor comfort. Runs via launchd.
 
 Config:  ~/.config/window_check/config.json
 State:   ~/.config/window_check/state.json
@@ -24,21 +25,29 @@ STATE_PATH = os.path.join(CONFIG_DIR, "state.json")
 REQUIRED = {
     "aranet_address": str,
     "waqi_token": str,
+    "google_pollen_key": str,
     "latitude": (int, float),
     "longitude": (int, float),
     "timezone": str,
     "window_orientations": list,
     "thresholds": dict,
+    "banner_glyphs": dict,
+    "heating_season_months": list,
     "pm25_alert_cooldown_hours": (int, float),
     "flush_alert_cooldown_hours": (int, float),
     "levoit_nudge_cooldown_hours": (int, float),
+    "intero_alert_cooldown_hours": (int, float),
+    "co2_urgent_repeat_minutes": (int, float),
+    "ble_timeout_seconds": (int, float),
 }
 REQUIRED_THRESHOLDS = {
-    "co2_alert", "co2_all_clear", "dew_point_f", "aqi_clean", "o3", "pm25",
+    "co2_alert", "co2_all_clear", "co2_urgent", "dew_point_f",
+    "dew_point_breeze_f", "breeze_mph", "aqi_clean", "o3", "pm25",
     "free_cooling_indoor_min_f", "free_cooling_delta_f",
     "free_cooling_close_within_f", "free_cooling_done_below_f",
     "flush_indoor_rh_max", "flush_dew_delta_f", "flush_outdoor_temp_min_f",
-    "pollen_grass", "pollen_birch", "pollen_ragweed", "wind_calm_mph",
+    "pollen_grass", "pollen_tree", "pollen_weed", "wind_calm_mph",
+    "intero_hot_f", "intero_dew_f", "intero_cold_f",
 }
 
 # Compass bearing (degrees, met. "from" convention) for each window facing.
@@ -53,17 +62,34 @@ _COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
 _ARROWS = {"N": "↓", "NE": "↙", "E": "←", "SE": "↖",
            "S": "↑", "SW": "↗", "W": "→", "NW": "↘"}
 
+_GLYPHS = {}  # populated from config; maps banner title → state glyph
+
 
 def notify(message, title="Window check"):
-    """Fire a macOS notification. Best-effort; never raises."""
-    safe = message.replace('"', "'")
+    """Post a notification named 'WindowCheck' via the app bundle, with an
+    osascript fallback. Prefixes the title with its config state glyph."""
+    disp = f"{_GLYPHS.get(title, '')} {title}".strip()
     try:
-        subprocess.run(
-            ["osascript", "-e",
-             f'display notification "{safe}" with title "{title}"'],
-            check=False,
-        )
-    except Exception as e:  # osascript missing / not on a Mac
+        from Foundation import (NSUserNotification, NSUserNotificationCenter,
+                                NSRunLoop, NSDate)
+        center = NSUserNotificationCenter.defaultUserNotificationCenter()
+        if center is not None:
+            n = NSUserNotification.alloc().init()
+            n.setTitle_(disp)
+            n.setInformativeText_(message)
+            center.deliverNotification_(n)
+            # brief run-loop tick so the center actually delivers before exit
+            NSRunLoop.currentRunLoop().runUntilDate_(
+                NSDate.dateWithTimeIntervalSinceNow_(0.3))
+            return
+    except Exception:
+        pass  # not in a bundle / API unavailable → fall back
+    safe, st = message.replace('"', "'"), disp.replace('"', "'")
+    try:
+        subprocess.run(["osascript", "-e",
+                        f'display notification "{safe}" with title "{st}"'],
+                       check=False)
+    except Exception as e:
         print(f"[notify failed] {e}", file=sys.stderr)
 
 
@@ -112,7 +138,9 @@ def load_config():
 def load_state():
     default = {"co2_alert_active": False, "last_pm25_alert_ts": 0.0,
                "cooling_open": False, "last_flush_alert_ts": 0.0,
-               "last_levoit_nudge_ts": 0.0}
+               "last_levoit_nudge_ts": 0.0, "last_co2_urgent_ts": 0.0,
+               "last_intero_hot_ts": 0.0, "last_intero_muggy_ts": 0.0,
+               "last_intero_cold_ts": 0.0}
     try:
         with open(STATE_PATH) as f:
             s = json.load(f)
@@ -164,16 +192,60 @@ def wind_guidance(orientations, wind_deg, mph, calm_mph):
     return f"{intake} windows intake, {exhaust} cracked as exhaust"
 
 
+def fetch_pollen(cfg, lat, lon, thr):
+    """Google Pollen API (0-5 index). Fail soft: returns (high, hits, known).
+    On missing key or any error, pollen is treated as unknown (never blocks)."""
+    key = cfg.get("google_pollen_key", "").strip()
+    if not key:
+        print("pollen: no google_pollen_key set — treating as unknown",
+              file=sys.stderr)
+        return False, [], False
+    try:
+        import requests
+        pj = requests.get(
+            "https://pollen.googleapis.com/v1/forecast:lookup",
+            params={"key": key, "location.latitude": lat,
+                    "location.longitude": lon, "days": 1},
+            timeout=20).json()
+        if "error" in pj:
+            raise RuntimeError(pj["error"].get("message", "API error"))
+        daily = pj.get("dailyInfo", [])
+        if not daily:
+            return False, [], False
+        types = {t.get("code"): (t.get("indexInfo") or {}).get("value")
+                 for t in daily[0].get("pollenTypeInfo", [])}
+        vals = {"grass": types.get("GRASS"), "tree": types.get("TREE"),
+                "weed": types.get("WEED")}
+        limits = {"grass": thr["pollen_grass"], "tree": thr["pollen_tree"],
+                  "weed": thr["pollen_weed"]}
+        hits = [k for k, v in vals.items() if v is not None and v > limits[k]]
+        return bool(hits), hits, True
+    except Exception as e:
+        print(f"pollen fetch failed (soft): {e}", file=sys.stderr)
+        return False, [], False
+
+
 def main():
     cfg = load_config()
     thr = cfg["thresholds"]
     lat, lon = cfg["latitude"], cfg["longitude"]
     tz = cfg["timezone"]
     orientations = cfg["window_orientations"]
+    _GLYPHS.clear()
+    _GLYPHS.update(cfg["banner_glyphs"])
     now = time.time()
 
     # --- indoor CO2 + temp/RH (BLE) ---
+    # Hard timeout via SIGALRM: BLE can wedge (adapter/peripheral state), and a
+    # launchd agent must never hang forever holding the Aranet's one connection.
+    import signal
     import aranet4
+
+    def _on_alarm(signum, frame):
+        raise TimeoutError(f"no Aranet response in {cfg['ble_timeout_seconds']}s")
+
+    signal.signal(signal.SIGALRM, _on_alarm)
+    signal.alarm(int(cfg["ble_timeout_seconds"]))
     try:
         reading = aranet4.client.get_current_readings(cfg["aranet_address"])
         co2 = reading.co2
@@ -182,11 +254,12 @@ def main():
         if co2 is None:
             raise ValueError("Aranet returned no CO2 value")
     except Exception as e:
-        # Transient BLE miss (device off/out of range) shouldn't spam.
         print(f"sensor read failed: {e}", file=sys.stderr)
         sys.exit(0)
+    finally:
+        signal.alarm(0)
 
-    # --- outdoor: WAQI (AQI/PM2.5/O3) + Open-Meteo (weather, wind, pollen) ---
+    # --- outdoor: WAQI (AQI/PM2.5/O3) + Open-Meteo (weather, wind) ---
     import requests
     try:
         waqi = requests.get(
@@ -221,15 +294,12 @@ def main():
                                 "precipitation,wind_speed_10m,wind_direction_10m"),
                     "temperature_unit": "fahrenheit", "wind_speed_unit": "mph",
                     "timezone": tz}, timeout=20).json()["current"]
-        pol = requests.get(
-            "https://air-quality-api.open-meteo.com/v1/air-quality",
-            params={"latitude": lat, "longitude": lon,
-                    "current": "grass_pollen,birch_pollen,ragweed_pollen",
-                    "timezone": tz}, timeout=20).json().get("current", {})
     except Exception as e:
-        # Transient network / API hiccup shouldn't spam.
         print(f"outdoor data fetch failed: {e}", file=sys.stderr)
         sys.exit(0)
+
+    # Pollen (separate, fail-soft — never aborts the run)
+    pollen_high, pollen_hits, pollen_known = fetch_pollen(cfg, lat, lon, thr)
 
     # Outdoor scalars
     tout = round(wx["temperature_2m"])
@@ -247,23 +317,17 @@ def main():
     dp_in = (round(dew_point_f(tin_f, rh_in))
              if tin_f is not None and rh_in is not None else None)
 
-    # Pollen (Open-Meteo pollen is Europe-only; None elsewhere → never blocks)
-    pollen_vals = {"grass": pol.get("grass_pollen"),
-                   "birch": pol.get("birch_pollen"),
-                   "ragweed": pol.get("ragweed_pollen")}
-    pollen_thr = {"grass": thr["pollen_grass"], "birch": thr["pollen_birch"],
-                  "ragweed": thr["pollen_ragweed"]}
-    pollen_hits = [k for k, v in pollen_vals.items()
-                   if v is not None and v > pollen_thr[k]]
-    pollen_high = bool(pollen_hits)
-
     # Gates
     pollutants_ok = (aqi is not None and aqi <= thr["aqi_clean"]
                      and (o3 is None or o3 < thr["o3"])
                      and (pm25 is None or pm25 < thr["pm25"]))
     aq_clean = pollutants_ok and not pollen_high
     open_allowed = aq_clean and not raining     # may we advise open/flush at all
-    comfy = dp <= thr["dew_point_f"]            # incoming air feels good
+    # Wind-comfort modifier: a breeze makes a higher dew point tolerable.
+    dew_gate = (thr["dew_point_breeze_f"] if wind_mph >= thr["breeze_mph"]
+                else thr["dew_point_f"])
+    comfy = dp <= dew_gate                       # incoming air feels good
+    smoke = pm25 is not None and pm25 >= thr["pm25"]
 
     # --- instrument line ---
     it = f"{tin_f}" if tin_f is not None else "?"
@@ -285,12 +349,12 @@ def main():
         return wind_guidance(orientations, wind_deg, wind_mph, thr["wind_calm_mph"])
 
     # --- Smoke: PM2.5 unhealthy → hard close + purifiers HIGH (rate-limited) ---
-    if pm25 is not None and pm25 >= thr["pm25"]:
+    if smoke:
         if now - state["last_pm25_alert_ts"] >= cfg["pm25_alert_cooldown_hours"] * 3600:
             body = ("Close up, smoke outside. Levoit back on: both units HIGH, "
                     "no timer — runs until the close-up clears.")
             verdict(body)
-            notify(body, title="Smoke — close")
+            notify(body, title="Smoke")
             state["last_pm25_alert_ts"] = now
             changed = True
         else:
@@ -340,8 +404,19 @@ def main():
             else:
                 verdict(f"Flush conditions hold ({round(rh_in)}%) — holding.")
 
-    # --- CO2 with hysteresis latch ---
-    if co2 >= thr["co2_alert"]:
+    # --- CO2: urgent tier (repeats, overrides latch) then normal hysteresis ---
+    if co2 >= thr["co2_urgent"] and not smoke:
+        if now - state["last_co2_urgent_ts"] >= cfg["co2_urgent_repeat_minutes"] * 60:
+            body = (f"CO₂ {co2} — you're thinking through soup. Open something "
+                    f"NOW, any window, air quality secondary.")
+            verdict(body)
+            notify(body, title="CO₂ urgent")
+            state["last_co2_urgent_ts"] = now
+            changed = True
+        else:
+            verdict(f"CO₂ {co2} — urgent, alerted recently, holding.")
+        state["co2_alert_active"] = True  # so the normal tier won't re-fire below
+    elif co2 >= thr["co2_alert"]:
         if open_allowed and comfy:
             body = f"CO₂ high and it's clean out — open up. {guide()}. Levoit off while open."
             title = "Open up"
@@ -367,6 +442,35 @@ def main():
     elif co2 < thr["co2_all_clear"] and state["co2_alert_active"]:
         state["co2_alert_active"] = False  # reset latch below all-clear
         changed = True
+    if co2 < thr["co2_urgent"] and state["last_co2_urgent_ts"]:
+        state["last_co2_urgent_ts"] = 0.0  # fresh urgent episode alerts at once
+        changed = True
+
+    # --- Interoception backstop: quiet indoor-comfort banners (4h/condition) ---
+    intero_cd = cfg["intero_alert_cooldown_hours"] * 3600
+    heating = time.localtime().tm_mon in cfg["heating_season_months"]
+
+    def intero(active, tskey, msg, title):
+        nonlocal changed, spoke
+        if active:
+            if now - state[tskey] >= intero_cd:
+                spoke = True
+                print(f"⇒ {msg}")
+                notify(msg, title=title)
+                state[tskey] = now
+                changed = True
+        elif state[tskey]:
+            state[tskey] = 0.0  # clear silently on recovery
+            changed = True
+
+    if tin_f is not None:
+        intero(tin_f >= thr["intero_hot_f"], "last_intero_hot_ts",
+               f"It's {tin_f}F in here — AC on", "Warm")
+        intero(tin_f <= thr["intero_cold_f"] and heating, "last_intero_cold_ts",
+               f"Cold in here — {tin_f}F", "Cold")
+    if dp_in is not None:
+        intero(dp_in >= thr["intero_dew_f"], "last_intero_muggy_ts",
+               f"Muggy inside, dew {dp_in}F — AC will pull it", "Muggy")
 
     # --- Moderate-band Levoit nudge (log only, windows presumed shut) ---
     if (pm25 is not None and 50 <= pm25 < 100 and not state["cooling_open"]

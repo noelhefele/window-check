@@ -1,6 +1,7 @@
 {
   "aranet_address": "XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX",
   "waqi_token": "YOUR_WAQI_TOKEN_HERE",
+  "google_pollen_key": "YOUR_GOOGLE_POLLEN_API_KEY_HERE",
   "latitude": 40.0,
   "longitude": -73.0,
   "timezone": "America/New_York",
@@ -8,7 +9,10 @@
   "thresholds": {
     "co2_alert": 1000,
     "co2_all_clear": 700,
+    "co2_urgent": 2000,
     "dew_point_f": 65,
+    "dew_point_breeze_f": 68,
+    "breeze_mph": 6,
     "aqi_clean": 75,
     "o3": 100,
     "pm25": 100,
@@ -19,12 +23,32 @@
     "flush_indoor_rh_max": 30,
     "flush_dew_delta_f": 3,
     "flush_outdoor_temp_min_f": 35,
-    "pollen_grass": 20,
-    "pollen_birch": 90,
-    "pollen_ragweed": 20,
-    "wind_calm_mph": 4
+    "pollen_grass": 3,
+    "pollen_tree": 3,
+    "pollen_weed": 3,
+    "wind_calm_mph": 4,
+    "intero_hot_f": 82,
+    "intero_dew_f": 68,
+    "intero_cold_f": 62
+  },
+  "heating_season_months": [11, 12, 1, 2, 3],
+  "banner_glyphs": {
+    "Fresh": "🟢",
+    "Open up": "🔵",
+    "Flush": "💧",
+    "Free cooling": "🌀",
+    "Close up": "🟠",
+    "Ozone day": "🟣",
+    "Pollen day": "🟡",
+    "Smoke": "🔴",
+    "CO₂ urgent": "🟥",
+    "Warm": "🌡️",
+    "Muggy": "💦",
+    "Cold": "🧊"
   },
   "pm25_alert_cooldown_hours": 2,
   "flush_alert_cooldown_hours": 6,
-  "levoit_nudge_cooldown_hours": 4
+  "levoit_nudge_cooldown_hours": 4,
+  "intero_alert_cooldown_hours": 4,
+  "co2_urgent_repeat_minutes": 45
 }

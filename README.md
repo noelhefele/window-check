@@ -28,29 +28,38 @@ close, HIGH for smoke, MEDIUM for pollen, a LOW-timer nudge in the moderate PM2.
 band).
 
 The **clean gate** blocks "open" advice on high AQI, ozone, PM2.5, **high pollen**
-(grass/birch/ragweed over config thresholds), or **rain** — logging why, without
-a banner. All "open" triggers also gate comfort on the **outdoor dew point** —
-that's what decides whether incoming air actually feels good.
+(grass/tree/weed over config thresholds, from Google's Pollen API on a 0–5 index),
+or **rain** — logging why, without a banner. "Open" triggers gate comfort on the
+**outdoor dew point** (raised a few degrees once there's a real breeze — moving air
+feels cooler). At **CO₂ ≥ 2000** an urgent tier overrides every gate but smoke and
+repeats until you ventilate.
+
+A quiet **interoception backstop** watches indoor comfort directly: banners if it's
+too hot, muggy, or (in heating season) too cold inside — at most once per 4h each.
 
 It uses hysteresis so it won't nag: one CO₂ alert until levels recover, the
 free-cooling advice latches until it's done, PM2.5 alerts at most once every 2h,
 dry-flush every 6h, the Levoit nudge every 4h, and "all good" is silent.
 
-Each run logs a one-line instrument readout followed by the verdict:
+Each run logs a one-line instrument readout followed by the verdict; banners are
+posted as **WindowCheck** (configurable in System Settings ▸ Notifications) with a
+one-glyph state title:
 
 ```
 ⌂ 83° 64% 526ppm │ ◌ 71° dew67° AQI55 │ E← 4mph
 ⇒ PM2.5 AQI 55, windows shut — worth running the Levoit: LOW, 2h timer is plenty.
 ```
 
-> **Note:** Open-Meteo's pollen data currently covers Europe only; elsewhere the
-> pollen fields return `null` and the pollen gate stays inert (never blocks).
+> **Pollen:** uses Google's Pollen API (free tier, US coverage). If the key is
+> missing or the call fails, pollen is treated as *unknown* and never blocks the
+> other triggers (fail-soft).
 
 ## Requirements
 
 - macOS with Python 3
 - An **Aranet4** CO₂ sensor
-- A free **WAQI API token** — request one at <https://aqicn.org/data-platform/token/>
+- A free **WAQI API token** — <https://aqicn.org/data-platform/token/>
+- A **Google Pollen API key** (optional; free tier) — <https://developers.google.com/maps/documentation/pollen>
 - Python packages: `aranet4`, `requests`
 
 ## Setup
