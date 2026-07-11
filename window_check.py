@@ -398,7 +398,8 @@ def main():
             state["cooling_open"] = False
             changed = True
         elif tout >= tin_f - thr["free_cooling_close_within_f"]:
-            body = "Outside caught up — close up, back to AC. Levoit back on."
+            body = (f"Outside caught up ({tout}° vs {tin_f}° inside) — close up, "
+                    f"back to AC. Levoit back on.")
             verdict(body)
             notify(body, title="Close up")
             state["cooling_open"] = False
