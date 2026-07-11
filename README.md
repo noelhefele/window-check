@@ -44,7 +44,9 @@ dry-flush every 6h, the Levoit nudge every 4h, and "all good" is silent.
 Each run logs a one-line instrument readout followed by the verdict; banners are
 posted as **WindowCheck** (configurable in System Settings ▸ Notifications) with a
 one-glyph state title and a short system sound (`notify_sound`, default *Blow* —
-the urgent tier and smoke use `notify_sound_urgent`, default *Basso*):
+the urgent tier and smoke use `notify_sound_urgent`, default *Basso*). Advice is
+self-invalidating, so each run's banner **supersedes** the previous one —
+Notification Center shows the current verdict, not a growing stack of stale cards:
 
 ```
 ⌂ 83° 64% 526ppm │ ◌ 71° dew67° AQI55 │ E← 4mph

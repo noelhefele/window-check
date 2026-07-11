@@ -67,12 +67,18 @@ _ARROWS = {"N": "↓", "NE": "↙", "E": "←", "SE": "↖",
 _GLYPHS = {}              # populated from config; maps banner title → glyph
 _SOUND = "Glass"          # default notification sound (from config)
 _SOUND_URGENT = "Sosumi"  # urgent-tier sound: CO2 ≥ 2000 / smoke (from config)
+_first_notify = True      # clear stale delivered banners once per run
 
 
 def notify(message, title="Window check", urgent=False):
     """Post a notification named 'WindowCheck' via the app bundle, with an
     osascript fallback. Prefixes the title with its config state glyph and
-    plays the default sound (or the urgent sound for CO2-urgent / smoke)."""
+    plays the default sound (or the urgent sound for CO2-urgent / smoke).
+
+    The tool's advice is self-invalidating, so before posting this run's first
+    banner we clear our previously-delivered ones — Notification Center then
+    shows only the current verdict instead of a growing stack of stale cards."""
+    global _first_notify
     disp = f"{_GLYPHS.get(title, '')} {title}".strip()
     sound = _SOUND_URGENT if urgent else _SOUND
     try:
@@ -80,6 +86,9 @@ def notify(message, title="Window check", urgent=False):
                                 NSRunLoop, NSDate)
         center = NSUserNotificationCenter.defaultUserNotificationCenter()
         if center is not None:
+            if _first_notify:
+                center.removeAllDeliveredNotifications()
+                _first_notify = False
             n = NSUserNotification.alloc().init()
             n.setTitle_(disp)
             n.setInformativeText_(message)
@@ -238,11 +247,12 @@ def main():
     lat, lon = cfg["latitude"], cfg["longitude"]
     tz = cfg["timezone"]
     orientations = cfg["window_orientations"]
-    global _SOUND, _SOUND_URGENT
+    global _SOUND, _SOUND_URGENT, _first_notify
     _GLYPHS.clear()
     _GLYPHS.update(cfg["banner_glyphs"])
     _SOUND = cfg["notify_sound"]
     _SOUND_URGENT = cfg["notify_sound_urgent"]
+    _first_notify = True
     now = time.time()
 
     # --- indoor CO2 + temp/RH (BLE) ---
