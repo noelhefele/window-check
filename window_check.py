@@ -401,10 +401,15 @@ def main():
             verdict("Smoke holding — stay shut, Levoit HIGH.")
 
     # --- Free cooling: hot inside, cool/clean/dry/comfortable out → open up ---
+    # When free cooling is engaged (advised, holding, or just closed), the
+    # interoception "Warm — AC on" nudge defers: the windows ARE the answer,
+    # and the close-up verdict already says "back to AC".
+    free_cool_engaged = False
     if tin_f is not None:
         cool_ok = (tin_f >= thr["free_cooling_indoor_min_f"]
                    and tout <= tin_f - thr["free_cooling_delta_f"]
                    and open_allowed and comfy)
+        free_cool_engaged = cool_ok or state["cooling_open"]
         if not state["cooling_open"]:
             if cool_ok:
                 body = (f"Hot inside, cool out — open up, cut the AC. {guide()}. "
@@ -505,7 +510,8 @@ def main():
             changed = True
 
     if tin_f is not None:
-        intero(tin_f >= thr["intero_hot_f"], "last_intero_hot_ts",
+        intero(tin_f >= thr["intero_hot_f"] and not free_cool_engaged,
+               "last_intero_hot_ts",
                f"It's {tin_f}F in here — AC on", "Warm")
         intero(tin_f <= thr["intero_cold_f"] and heating, "last_intero_cold_ts",
                f"Cold in here — {tin_f}F", "Cold")
