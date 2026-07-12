@@ -7,7 +7,10 @@
   "latitude": 40.0,
   "longitude": -73.0,
   "timezone": "America/New_York",
-  "window_orientations": ["north", "west"],
+  "window_orientations": [
+    "north",
+    "west"
+  ],
   "thresholds": {
     "co2_alert": 1000,
     "co2_all_clear": 700,
@@ -29,11 +32,17 @@
     "pollen_tree": 3,
     "pollen_weed": 3,
     "wind_calm_mph": 4,
-    "intero_hot_f": 82,
+    "intero_hot_f": 85,
     "intero_dew_f": 68,
     "intero_cold_f": 62
   },
-  "heating_season_months": [11, 12, 1, 2, 3],
+  "heating_season_months": [
+    11,
+    12,
+    1,
+    2,
+    3
+  ],
   "banner_glyphs": {
     "Fresh": "🟢",
     "Open up": "🔵",
