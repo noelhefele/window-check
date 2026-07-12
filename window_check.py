@@ -68,19 +68,39 @@ _GLYPHS = {}              # populated from config; maps banner title → glyph
 _SOUND = "Glass"          # default notification sound (from config)
 _SOUND_URGENT = "Sosumi"  # urgent-tier sound: CO2 ≥ 2000 / smoke (from config)
 _first_notify = True      # clear stale delivered banners once per run
+_played = set()           # sound names already played this run (dedupe chimes)
+
+
+def _play_sound(name):
+    """Play a named system sound via afplay (blocking, ~1-2s). macOS 26 drops
+    the deprecated notification API's own sound, so we play it ourselves."""
+    for base in ("/System/Library/Sounds",
+                 os.path.expanduser("~/Library/Sounds"), "/Library/Sounds"):
+        path = os.path.join(base, f"{name}.aiff")
+        if os.path.exists(path):
+            try:
+                subprocess.run(["afplay", path], timeout=6,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
+            return
 
 
 def notify(message, title="Window check", urgent=False):
-    """Post a notification named 'WindowCheck' via the app bundle, with an
-    osascript fallback. Prefixes the title with its config state glyph and
-    plays the default sound (or the urgent sound for CO2-urgent / smoke).
+    """Post a notification named 'WindowCheck' via the app bundle (osascript
+    fallback), and play its sound ourselves via afplay — macOS 26 ignores the
+    deprecated API's setSoundName. Title is prefixed with its config glyph;
+    urgent states (CO2-urgent / smoke) use the urgent sound.
 
-    The tool's advice is self-invalidating, so before posting this run's first
-    banner we clear our previously-delivered ones — Notification Center then
-    shows only the current verdict instead of a growing stack of stale cards."""
+    Advice is self-invalidating, so before this run's first banner we clear our
+    previously-delivered ones — Notification Center shows only the current
+    verdict instead of a growing stack of stale cards."""
     global _first_notify
     disp = f"{_GLYPHS.get(title, '')} {title}".strip()
-    sound = _SOUND_URGENT if urgent else _SOUND
+    snd = _SOUND_URGENT if urgent else _SOUND
+    if snd not in _played:          # one chime per sound per run, not per banner
+        _played.add(snd)
+        _play_sound(snd)
     try:
         from Foundation import (NSUserNotification, NSUserNotificationCenter,
                                 NSRunLoop, NSDate)
@@ -92,7 +112,6 @@ def notify(message, title="Window check", urgent=False):
             n = NSUserNotification.alloc().init()
             n.setTitle_(disp)
             n.setInformativeText_(message)
-            n.setSoundName_(sound)
             center.deliverNotification_(n)
             # brief run-loop tick so the center actually delivers before exit
             NSRunLoop.currentRunLoop().runUntilDate_(
@@ -103,8 +122,8 @@ def notify(message, title="Window check", urgent=False):
     safe, st = message.replace('"', "'"), disp.replace('"', "'")
     try:
         subprocess.run(["osascript", "-e",
-                        f'display notification "{safe}" with title "{st}" '
-                        f'sound name "{sound}"'], check=False)
+                        f'display notification "{safe}" with title "{st}"'],
+                       check=False)
     except Exception as e:
         print(f"[notify failed] {e}", file=sys.stderr)
 
@@ -253,6 +272,7 @@ def main():
     _SOUND = cfg["notify_sound"]
     _SOUND_URGENT = cfg["notify_sound_urgent"]
     _first_notify = True
+    _played.clear()
     now = time.time()
 
     # --- indoor CO2 + temp/RH (BLE) ---
