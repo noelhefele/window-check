@@ -34,7 +34,8 @@
     "wind_calm_mph": 4,
     "intero_hot_f": 85,
     "intero_dew_f": 68,
-    "intero_cold_f": 62
+    "intero_cold_f": 62,
+    "levoit_banner_pm25": 75
   },
   "heating_season_months": [
     11,
@@ -55,7 +56,9 @@
     "CO₂ urgent": "🟥",
     "Warm": "🌡️",
     "Muggy": "💦",
-    "Cold": "🧊"
+    "Cold": "🧊",
+    "Air advisory": "📢",
+    "Filter on": "🌬️"
   },
   "pm25_alert_cooldown_hours": 2,
   "flush_alert_cooldown_hours": 6,

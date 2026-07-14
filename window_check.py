@@ -49,7 +49,7 @@ REQUIRED_THRESHOLDS = {
     "free_cooling_close_within_f", "free_cooling_done_below_f",
     "flush_indoor_rh_max", "flush_dew_delta_f", "flush_outdoor_temp_min_f",
     "pollen_grass", "pollen_tree", "pollen_weed", "wind_calm_mph",
-    "intero_hot_f", "intero_dew_f", "intero_cold_f",
+    "intero_hot_f", "intero_dew_f", "intero_cold_f", "levoit_banner_pm25",
 }
 
 # Compass bearing (degrees, met. "from" convention) for each window facing.
@@ -175,7 +175,7 @@ def load_state():
                "cooling_open": False, "last_flush_alert_ts": 0.0,
                "last_levoit_nudge_ts": 0.0, "last_co2_urgent_ts": 0.0,
                "last_intero_hot_ts": 0.0, "last_intero_muggy_ts": 0.0,
-               "last_intero_cold_ts": 0.0}
+               "last_intero_cold_ts": 0.0, "last_advisory_date": ""}
     try:
         with open(STATE_PATH) as f:
             s = json.load(f)
@@ -260,6 +260,35 @@ def fetch_pollen(cfg, lat, lon, thr):
         return False, [], False
 
 
+def fetch_forecast(lat, lon, tz):
+    """Today's forecast peaks from Open-Meteo hourly pollutant AQIs.
+    Returns (o3_max, o3_peak_hour, pm25_max) — all None on any failure
+    (fail-soft: no forecast just means no advisory banner)."""
+    try:
+        import requests
+        h = requests.get(
+            "https://air-quality-api.open-meteo.com/v1/air-quality",
+            params={"latitude": lat, "longitude": lon,
+                    "hourly": "us_aqi_ozone,us_aqi_pm2_5",
+                    "forecast_days": 1, "timezone": tz},
+            timeout=20).json().get("hourly", {})
+        times = h.get("time", [])
+        o3s = h.get("us_aqi_ozone", [])
+        pms = [v for v in h.get("us_aqi_pm2_5", []) if v is not None]
+        o3_valid = [(v, t) for v, t in zip(o3s, times) if v is not None]
+        if not o3_valid and not pms:
+            return None, None, None
+        o3_max, o3_peak = max(o3_valid) if o3_valid else (None, None)
+        peak_hr = None
+        if o3_peak:
+            hr = int(o3_peak[11:13])
+            peak_hr = ("%d%s" % (hr % 12 or 12, "am" if hr < 12 else "pm"))
+        return o3_max, peak_hr, (max(pms) if pms else None)
+    except Exception as e:
+        print(f"forecast fetch failed (soft): {e}", file=sys.stderr)
+        return None, None, None
+
+
 def main():
     cfg = load_config()
     thr = cfg["thresholds"]
@@ -338,8 +367,9 @@ def main():
         print(f"outdoor data fetch failed: {e}", file=sys.stderr)
         sys.exit(0)
 
-    # Pollen (separate, fail-soft — never aborts the run)
+    # Pollen + today's forecast peaks (both fail-soft — never abort the run)
     pollen_high, pollen_hits, pollen_known = fetch_pollen(cfg, lat, lon, thr)
+    fc_o3, fc_o3_peak, fc_pm25 = fetch_forecast(lat, lon, tz)
 
     # Outdoor scalars
     tout = round(wx["temperature_2m"])
@@ -400,6 +430,30 @@ def main():
         else:
             verdict("Smoke holding — stay shut, Levoit HIGH.")
 
+    # --- Forecast advisory: one heads-up banner per day, morning onward, when
+    #     today's predicted O3 or PM2.5 peak crosses the unhealthy line. Geared
+    #     to planning fieldwork, not just windows. ---
+    today = time.strftime("%Y-%m-%d")
+    fc_o3_bad = fc_o3 is not None and fc_o3 >= thr["o3"]
+    fc_pm_bad = fc_pm25 is not None and fc_pm25 >= thr["pm25"]
+    if ((fc_o3_bad or fc_pm_bad) and state["last_advisory_date"] != today
+            and time.localtime().tm_hour >= 6):
+        if fc_o3_bad and fc_pm_bad:
+            body = (f"Air advisory today — ozone to AQI {round(fc_o3)} "
+                    f"(~{fc_o3_peak}), PM2.5 to {round(fc_pm25)}. Morning "
+                    f"fieldwork only; windows shut; Levoit LOW all day.")
+        elif fc_o3_bad:
+            body = (f"Ozone advisory today — forecast AQI {round(fc_o3)}, "
+                    f"peaking ~{fc_o3_peak}. Park time this morning; windows "
+                    f"shut through the afternoon. HEPA won't catch ozone.")
+        else:
+            body = (f"PM2.5 advisory today — forecast AQI {round(fc_pm25)}. "
+                    f"Mask for the park, windows shut, Levoit LOW all day.")
+        verdict(body)
+        notify(body, title="Air advisory")
+        state["last_advisory_date"] = today
+        changed = True
+
     # --- Free cooling: hot inside, cool/clean/dry/comfortable out → open up ---
     # When free cooling is engaged (advised, holding, or just closed), the
     # interoception "Warm — AC on" nudge defers: the windows ARE the answer,
@@ -422,6 +476,23 @@ def main():
             verdict(f"Free cooling done — inside {tin_f}°; latch cleared.")
             state["cooling_open"] = False
             changed = True
+        elif not aq_clean:
+            # Air went bad while the windows are open — close regardless of
+            # temperature. (Previously only PM2.5 >= 100 could force this.)
+            state["cooling_open"] = False
+            changed = True
+            if smoke:
+                verdict("Smoke while open — latch cleared (smoke banner covers it).")
+            else:
+                if pollen_high:
+                    why = f"pollen ({', '.join(pollen_hits)})"
+                elif o3 is not None and o3 >= thr["o3"]:
+                    why = f"ozone AQI {round(o3)}"
+                else:
+                    why = f"AQI {aqi if aqi is not None else '?'}"
+                body = f"Air went bad ({why}) — close up. Levoit back on."
+                verdict(body)
+                notify(body, title="Close up")
         elif tout >= tin_f - thr["free_cooling_close_within_f"]:
             body = (f"Outside caught up ({tout}° vs {tin_f}° inside) — close up, "
                     f"back to AC. Levoit back on.")
@@ -519,12 +590,20 @@ def main():
         intero(dp_in >= thr["intero_dew_f"], "last_intero_muggy_ts",
                f"Muggy inside, dew {dp_in}F — AC will pull it", "Muggy")
 
-    # --- Moderate-band Levoit nudge (log only, windows presumed shut) ---
+    # --- Elevated-PM Levoit prompts (windows presumed shut). Closed windows
+    #     still leak PM2.5, so upper-moderate gets a real banner; the mild
+    #     band stays a log-only nudge. Same throttle for both. ---
     if (pm25 is not None and 50 <= pm25 < 100 and not state["cooling_open"]
             and not spoke):
         if now - state["last_levoit_nudge_ts"] >= cfg["levoit_nudge_cooldown_hours"] * 3600:
-            verdict(f"PM2.5 AQI {pm25}, windows shut — worth running the Levoit: "
-                    f"LOW, 2h timer is plenty.")
+            if pm25 >= thr["levoit_banner_pm25"]:
+                body = (f"PM2.5 AQI {pm25} outside seeps in even shut — "
+                        f"Levoit LOW, 2h timer.")
+                verdict(body)
+                notify(body, title="Filter on")
+            else:
+                verdict(f"PM2.5 AQI {pm25}, windows shut — worth running the "
+                        f"Levoit: LOW, 2h timer is plenty.")
             state["last_levoit_nudge_ts"] = now
             changed = True
 
