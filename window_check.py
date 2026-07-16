@@ -419,8 +419,9 @@ def main():
         state["sensor_fail_count"] = state.get("sensor_fail_count", 0) + 1
         changed = True
         if state["sensor_fail_count"] == 6:
-            notify("Aranet unreachable for ~3 hours — check its battery. "
-                   "Outdoor air alerts still running; indoor ones are blind.",
+            notify("Aranet unreachable for ~3 hours — is it away from home "
+                   "(or battery dead)? Outdoor alerts still running; indoor "
+                   "ones resume when it's back in range.",
                    title="Sensor offline")
     elif state.get("sensor_fail_count", 0):
         state["sensor_fail_count"] = 0
