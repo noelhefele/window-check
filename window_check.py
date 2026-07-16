@@ -175,7 +175,8 @@ def load_state():
                "cooling_open": False, "last_flush_alert_ts": 0.0,
                "last_levoit_nudge_ts": 0.0, "last_co2_urgent_ts": 0.0,
                "last_intero_hot_ts": 0.0, "last_intero_muggy_ts": 0.0,
-               "last_intero_cold_ts": 0.0, "last_advisory_date": ""}
+               "last_intero_cold_ts": 0.0, "last_advisory_date": "",
+               "sensor_fail_count": 0}
     try:
         with open(STATE_PATH) as f:
             s = json.load(f)
@@ -323,8 +324,10 @@ def main():
         if co2 is None:
             raise ValueError("Aranet returned no CO2 value")
     except Exception as e:
+        # Sensor down must NOT blind the outdoor alerts (smoke, advisory,
+        # filter-on need no CO2). Run degraded: indoor triggers skip.
         print(f"sensor read failed: {e}", file=sys.stderr)
-        sys.exit(0)
+        co2 = tin_c = rh_in = None
     finally:
         signal.alarm(0)
 
@@ -403,12 +406,25 @@ def main():
     it = f"{tin_f}" if tin_f is not None else "?"
     ih = f"{round(rh_in)}" if rh_in is not None else "?"
     ia = f"{aqi}" if aqi is not None else "?"
-    print(f"⌂ {it}° {ih}% {co2}ppm │ ◌ {tout}° dew{dp}° AQI{ia} │ "
+    ic = f"{co2}" if co2 is not None else "?"
+    print(f"⌂ {it}° {ih}% {ic}ppm │ ◌ {tout}° dew{dp}° AQI{ia} │ "
           f"{wdir}{warrow} {wind_mph}mph")
 
     state = load_state()
     changed = False
     spoke = False
+
+    # --- persistent sensor failure → one heads-up after ~3h of silence ---
+    if co2 is None:
+        state["sensor_fail_count"] = state.get("sensor_fail_count", 0) + 1
+        changed = True
+        if state["sensor_fail_count"] == 6:
+            notify("Aranet unreachable for ~3 hours — check its battery. "
+                   "Outdoor air alerts still running; indoor ones are blind.",
+                   title="Sensor offline")
+    elif state.get("sensor_fail_count", 0):
+        state["sensor_fail_count"] = 0
+        changed = True
 
     def verdict(line):
         nonlocal spoke
@@ -522,7 +538,8 @@ def main():
                 verdict(f"Flush conditions hold ({round(rh_in)}%) — holding.")
 
     # --- CO2: urgent tier (repeats, overrides latch) then normal hysteresis ---
-    if co2 >= thr["co2_urgent"] and not smoke:
+    # (whole chain skips when the sensor is offline: co2 is None)
+    if co2 is not None and co2 >= thr["co2_urgent"] and not smoke:
         if now - state["last_co2_urgent_ts"] >= cfg["co2_urgent_repeat_minutes"] * 60:
             body = (f"CO₂ {co2} — you're thinking through soup. Open something "
                     f"NOW, any window, air quality secondary.")
@@ -533,7 +550,7 @@ def main():
         else:
             verdict(f"CO₂ {co2} — urgent, alerted recently, holding.")
         state["co2_alert_active"] = True  # so the normal tier won't re-fire below
-    elif co2 >= thr["co2_alert"]:
+    elif co2 is not None and co2 >= thr["co2_alert"]:
         if open_allowed and comfy:
             body = f"CO₂ high and it's clean out — open up. {guide()}. Levoit off while open."
             title = "Open up"
@@ -556,10 +573,12 @@ def main():
             changed = True
         else:
             verdict(f"CO₂ still {co2}ppm — already flagged, holding.")
-    elif co2 < thr["co2_all_clear"] and state["co2_alert_active"]:
+    elif (co2 is not None and co2 < thr["co2_all_clear"]
+          and state["co2_alert_active"]):
         state["co2_alert_active"] = False  # reset latch below all-clear
         changed = True
-    if co2 < thr["co2_urgent"] and state["last_co2_urgent_ts"]:
+    if (co2 is not None and co2 < thr["co2_urgent"]
+            and state["last_co2_urgent_ts"]):
         state["last_co2_urgent_ts"] = 0.0  # fresh urgent episode alerts at once
         changed = True
 
@@ -614,7 +633,8 @@ def main():
         elif pollen_high:
             verdict(f"pollen high ({', '.join(pollen_hits)}) — windows stay shut.")
         else:
-            verdict(f"Fresh — CO₂ {co2}ppm, nothing to do.")
+            verdict(f"Fresh — CO₂ {co2}ppm, nothing to do." if co2 is not None
+                    else "Outdoor watch only — Aranet offline, indoor triggers blind.")
 
     if changed:
         save_state(state)

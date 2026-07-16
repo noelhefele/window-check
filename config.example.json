@@ -58,7 +58,8 @@
     "Muggy": "💦",
     "Cold": "🧊",
     "Air advisory": "📢",
-    "Filter on": "🌬️"
+    "Filter on": "🌬️",
+    "Sensor offline": "🔋"
   },
   "pm25_alert_cooldown_hours": 2,
   "flush_alert_cooldown_hours": 6,
