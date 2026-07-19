@@ -262,9 +262,11 @@ def fetch_pollen(cfg, lat, lon, thr):
 
 
 def fetch_forecast(lat, lon, tz):
-    """Today's forecast peaks from Open-Meteo hourly pollutant AQIs.
-    Returns (o3_max, o3_peak_hour, pm25_max) — all None on any failure
-    (fail-soft: no forecast just means no advisory banner)."""
+    """Remaining-today forecast peaks from Open-Meteo hourly pollutant AQIs.
+    Only hours from the current one onward count — the advisory exists to
+    plan the rest of today, so an overnight peak that already passed
+    shouldn't drive it. Returns (o3_max, o3_peak_hour, pm25_max) — all None
+    on any failure (fail-soft: no forecast just means no advisory banner)."""
     try:
         import requests
         h = requests.get(
@@ -275,8 +277,11 @@ def fetch_forecast(lat, lon, tz):
             timeout=20).json().get("hourly", {})
         times = h.get("time", [])
         o3s = h.get("us_aqi_ozone", [])
-        pms = [v for v in h.get("us_aqi_pm2_5", []) if v is not None]
-        o3_valid = [(v, t) for v, t in zip(o3s, times) if v is not None]
+        pm25s = h.get("us_aqi_pm2_5", [])
+        cur_hr = time.localtime().tm_hour
+        upcoming = [i for i, t in enumerate(times) if int(t[11:13]) >= cur_hr]
+        o3_valid = [(o3s[i], times[i]) for i in upcoming if o3s and o3s[i] is not None]
+        pms = [pm25s[i] for i in upcoming if pm25s and pm25s[i] is not None]
         if not o3_valid and not pms:
             return None, None, None
         o3_max, o3_peak = max(o3_valid) if o3_valid else (None, None)
